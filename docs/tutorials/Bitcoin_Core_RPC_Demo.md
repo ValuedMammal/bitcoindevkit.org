@@ -3,45 +3,45 @@ title: "BDK wallet with Bitcoin core RPC "
 description: "Tutorial showing usage of Bitcoin core backend with BDK wallet"
 authors:
     - Rajarshi Maitra
-date: "2021-08-21"
+    - ValuedMammal
+date: "2023-11-15"
 tags: ["tutorial", "BDK", "Bitcoin Core", "RPC", "Wallet"]
 hidden: true
 draft: false
 ---
 
 ## Introduction
-BDK wallet developer library can be used to easily deploy wallets with various kinds of blockchain backend support, like [`electrum`](https://github.com/romanz/electrs), [`esplora`](https://github.com/Blockstream/esplora), `compact-filters` ([BIP157](https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki)) etc. With the latest release of BDK [`v0.10.0`](https://github.com/bitcoindevkit/bdk/releases/tag/v0.10.0), BDK now supports Bitcoin Core as a blockchain backend. BDK talks with Bitcoin Core using rust-bitcoin's [bitcoincore-rpc](https://github.com/rust-bitcoin/rust-bitcoincore-rpc) library.
+BDK exists among a family of libraries that can be used to deploy wallets supporting a variety of blockchain backends like [electrum](https://github.com/romanz/electrs), [esplora](https://github.com/Blockstream/esplora), and [compact block filters](https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki). Since v0.10.0, BDK also supports Bitcoin Core as a blockchain backend by making use of rust-bitcoin's [bitcoincore-rpc](https://github.com/rust-bitcoin/rust-bitcoincore-rpc) crate. The combined tooling is elegantly designed to allow developers to get up to speed when it comes to prototyping and deploying custom wallets.
 
-This allows wallet devs to quickly deploy their wallet that can talk to a bitcoin full node (home raspi nodes) out of the box. Wallet devs don't need to worry about connecting to a full node with correct RPC calls, all of that is handled by BDK under the hood. All they need is to identify the full node's RPC IP address and the correct RPC credentials.
+In this tutorial we will see how to write a simple wallet that will connect to a Bitcoin Core node, send and receive transactions, and update its balance on the fly. What makes it unique is that rather than use `bdk-cli`, we'll accomplish a number of tasks by coding a project in rust that uses the BDK library.
 
-In this tutorial we will see how to write a very simplistic wallet code that can connect to a bitcoin core node and maintain its balance and make transactions.
+## You will need
+- A Bitcoin Core node running on regtest. Download an official release from [bitcoincore.org](https://bitcoincore.org/bin/bitcoin-core-0.25.0/) or build it from [source](https://github.com/bitcoin/bitcoin). For this tutorial we're using Bitcoin 25.0.
+- Rust toolchain. It's recommended to install from [rust-lang.org](https://www.rust-lang.org/tools/install).
+- Time to complete: 30min
 
-Unlike other tutorials, we will not use `bdk-cli` tools, but instead write rust code directly using `BDK` devkit. In the end we will end up with our own simple bitcoin wallet.
 
-## Prerequisite
-To run with this tutorial you would need to have a bitcoin core node running in regtest mode. Get the bitcoin core binary either from the [bitcoin core repo](https://bitcoincore.org/bin/bitcoin-core-0.21.1/) or [build from source](https://github.com/bitcoin/bitcoin/blob/v0.21.1/doc/build-unix.md).
-
-Then configure the node with a following `bitcoin.conf` file
+## Set Up
+Configure `bitcoind` to run in regtest by creating a `bitcoin.conf` that looks like this.
 ```txt
-regtest=1
-fallbackfee=0.0001
 server=1
-txindex=1
+regtest=1
 rpcuser=admin
 rpcpassword=password
+txindex=1
+fallbackfee=0.0001
 ```
 
-Apart from that, you would need to install rust in your system. Grab the installation one-liner from [here](https://www.rust-lang.org/tools/install). 
-
-## Setting Up
-Create a new cargo binary repository.
+Then create a new cargo project called `bdk-example` in whatever folder you like to write code, in this case `~/tutorial`.
 ```shell
-mkdir ~/tutorial
+cd ~
+mkdir tutorial
 cd tutorial
 cargo new bdk-example
 cd bdk-example
 ```
-This will create a new project folder named `bdk-example` with `src/main.rs` and a `cargo.toml`. 
+
+We created a new binary executable with the following directory structure. The two files to notice are `src/main.rs` and `Cargo.toml`.
 ```shell
 $ tree -L 3 .
 .
@@ -51,41 +51,37 @@ $ tree -L 3 .
 
 1 directory, 2 files
 ```
-Opening `main.rs` you will see some predefined code like this
+
+The file `main.rs` is the main entry point of our program and looks like this:
 
 ``` rust
 fn main() {
     println!("Hello, world!");
 }
 ```
-Try running `cargo run` and if everything is set, you should see "Hello, world!" printed in your terminal
-```shell
-$ cargo run
-    Compiling bdk-example v0.1.0 (/home/raj/github-repo/tutorial/bdk-example)
-    Finished dev [unoptimized + debuginfo] target(s) in 0.95s
-    Running `target/debug/bdk-example`
-Hello, world!
-```
-Of course we will not use the given `println!()` statement, but we will put our main code in the `main()` function.
 
-`cargo new` will also produce a skeleton `Cargo.toml` file like this
+Open `Cargo.toml` which has also been populated with a simple skeleton.
 ```toml
 [package]
 name = "bdk-example"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 ```
+
+Try executing `cargo run` in a terminal. If the line "Hello, world!" is printed, then great, we're ready to go. If not, make sure you have properly installed rust for your system, then come back and repeat the steps above.
+
 
 ## Setting dependencies
-Once the rust binary is compiled and running, we now need to specify the dependencies we need to work on our library.
+We must specify the dependencies to be used in our project.
 
-Remember that BDK provides almost everything we would need to build a wallet out of the box. So we don't need any more dependencies apart from BDK. We will use another small rust crate called [`dirs_next`](https://crates.io/crates/dirs-next) to find our home directory and store wallet files in a subfolder there.
+The `bdk` crate provides most of what we need for building a wallet. For this tutorial, we're interested in interfacing with Bitcoin Core, and for that we'll use another crate in the BDK ecosystem called `bdk_bitcoind_rpc`. The final dependency we're using is `anyhow` which provides additional ergonomic error handling.
 
-Add the dependencies into `Cargo.toml` like below
+Add these to `Cargo.toml` under the dependencies section like so:
+
 ```toml
 [package]
 name = "bdk-example"
@@ -95,572 +91,602 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bdk = { version = "^0.10", default-features = false, features = ["all-keys", "key-value-db", "rpc"]}
-dirs-next = "2.0"
+anyhow = "1.0.75"
+bdk = { version = "1.0", features = ["all-keys"] }
+bdk_bitcoind_rpc = "0.1.0"
 ```
-We disabled the default BDK feature (which specifies blockchain backend as an electrum server) and we requested the following features:
- - **all-keys**: Adds BIP39 key derivation capabilities
- - **key-value-db**: Adds a persistence storage capability
- - **rpc**: Adds the RPC blockchain backend capability.
 
-Now that we have the dependencies added, we can import them in the `main.rs` file to use in our code.
-Add the following imports at the start of `main.rs`
+We enabled BDK's **all-keys** feature, which let's us derive keys as specified by [BIP39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki).
+
+Now that we have the required dependencies, we can import everything we'll use at the top of `main.rs`.
 
 ```rust
-use bdk::bitcoin::Network;
+use anyhow::Result;
+
+use bdk::bitcoin::bip32::DerivationPath;
 use bdk::bitcoin::secp256k1::Secp256k1;
-use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
 use bdk::bitcoin::Amount;
-use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};
+use bdk::bitcoin::Network;
 
-use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig, wallet_name_from_descriptor};
-use bdk::blockchain::{ConfigurableBlockchain, NoopProgress};
+use bdk::descriptor;
+use bdk::descriptor::IntoWalletDescriptor;
+use bdk_bitcoind_rpc::bitcoincore_rpc;
+use bdk_bitcoind_rpc::bitcoincore_rpc::Auth;
+use bdk_bitcoind_rpc::bitcoincore_rpc::Client;
+use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
+use bdk_bitcoind_rpc::Emitter;
 
-use bdk::keys::bip39::{Mnemonic, Language, MnemonicType};
-use bdk::keys::{GeneratedKey, GeneratableKey, ExtendedKey, DerivableKey, DescriptorKey};
-use bdk::keys::DescriptorKey::Secret;
+use bdk::keys::bip39::Language;
+use bdk::keys::bip39::Mnemonic;
+use bdk::keys::bip39::WordCount;
+use bdk::keys::GeneratableKey;
+use bdk::keys::GeneratedKey;
 
-use bdk::miniscript::miniscript::Segwitv0;
-
+use bdk::miniscript::miniscript::Tap;
+use bdk::wallet::AddressIndex;
+use bdk::SignOptions;
 use bdk::Wallet;
-use bdk::wallet::{AddressIndex, signer::SignOptions};
-
-use bdk::sled;
 
 use std::str::FromStr;
 ```
-With this we are now ready to add our wallet code.
 
-## Getting Descriptors
 
-BDK is a descriptor based wallet library. That means when we specify our wallet key-chain we need to tell BDK about it in the format of a descriptor. You can read up on descriptors more [here](https://bitcoindevkit.org/descriptors/). A descriptor string looks like this
-`"wpkh([b8b575c2/84'/1'/0'/0]tprv8icWtRzy9CWgFxpGMLSdAeE4wWyz39XGc6SwykeTo13tYm14JkVVQAf7jz8WDDarCgNJrG3aEPJEqchDWeJdiaWpS3FwbLB9SzsN57V7qxB/*)"`.
+## Descriptors
+In BDK, [descriptors](https://bitcoindevkit.org/descriptors/) are a first-class citizen. Descriptors are a powerful and compact way of representing keychains capable of generating all the addresses a wallet may need, and can be used to encode more elaborate spending policies compatible with [miniscript](https://bitcoin.sipa.be/miniscript/). Bitcoin Core provides a good [primer on descriptors](https://github.com/bitcoin/bitcoin/blob/master/doc/descriptors.md).
 
-This describes a SegwitV0 descriptor of a key derived at path `m/84'/1'/0'/0`. If you already have a descriptor from other sources, you can use that. Otherwise, BDK has your back. BDK can be used to generate a fresh master key with mnemonic, and then derive child keys from it given a specific path. Putting the key in a descriptor is as simple as wrapping it with a `wpkh()` string.
+Therefore, to define the keys our wallet is interested in, we must inform BDK of them in the form of a descriptor, which for example may look something like this:
 
-We will use a dedicated function that will create fresh receive and change descriptors from BDK for our purpose. It will also generate the mnemonic word list for later regenerating the wallet. But we will ignore that for our scope.
+`tr([04d89365/86'/1'/0']tpubDDmjFF6aY9qfiAQLWktoBZCBwVRWRqQeaxoxU3Fcxd3LxeRpSk2pU4WSsvXZbdXiMP1GKXSDUj5i4ExMmnehH9kxmL4gEWQGhmAYufv5hQh/0/*)#l8dq6la9`
 
-Add a function named `get-descriptor()` below the `main()` function as shown
+To break it down, this is a Taproot descriptor with master fingerprint `04d89365` derived using the path `m/86'/1'/0'/0`, which along with `tpub...` signifies that we're using regtest (or testnet). Notice the `'*'` that lets us generate a range of child keys and addresses. We indicate the script type is pay-to-taproot by wrapping it all in `tr()`, and finally the bit at the end `#l8dq6la9` is a checksum commonly used by software to check data integrity. BDK can be used to generate a new keypair and BIP39 mnemonic, and from there create its own wallet descriptors, or you can bring your own.
+
+Let's start coding.
+
+We will use a function `create_descriptors` to create a pair of descriptors, one for the external (receive) addresses and the other for internal (change) addresses.
+
+You'll notice two methods are shown for generating keys, only one of which is strictly necessary. The first is to generate a random mnemonic and the other is to provide our own. As a reminder, **the mnemonic is your private key. Don't use any of the secrets generated in this example with real money.**
+
+Add the function `create_descriptors` right below `main()` as shown.
 ```rust
 fn main() {
     ...
 }
 
-// generate fresh descriptor strings and return them via (receive, change) tuple
-fn get_descriptors() -> (String, String) {
-    // Create a new secp context
+/// Creates wallet `Descriptor`s from a master secret
+fn create_descriptors() -> Result<(String, String)> {
+    // Create new secp context
     let secp = Secp256k1::new();
-     
-    // You can also set a password to unlock the mnemonic
-    let password = Some("random password".to_string());
 
-    // Generate a fresh mnemonic, and from there a privatekey
-    let mnemonic: GeneratedKey<_, Segwitv0> =
-                Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
-    let mnemonic = mnemonic.into_key();
-    let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
-    let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+    // Generate a mnemonic from random entropy
+    let mnemonic: GeneratedKey<_, Tap> =
+       Mnemonic::generate((WordCount::Words12, Language::English)).expect("generate secret");
+    println!("Mnemonic: {}", *mnemonic);
 
-    // Create derived privkey from the above master privkey
-    // We use the following derivation paths for receive and change keys
-    // receive: "m/84h/1h/0h/0"
-    // change: "m/84h/1h/0h/1" 
-    let mut keys = Vec::new();
+    // Provide our own mnemonic
+    // let mnemonic = Mnemonic::from_str(
+    //     "print region fury craft unique forest humble famous river cargo job egg",
+    // )?;
 
-    for path in ["m/84h/1h/0h/0", "m/84h/1h/0h/1"] {
-        let deriv_path: DerivationPath = DerivationPath::from_str(path).unwrap();
-        let derived_xprv = &xprv.derive_priv(&secp, &deriv_path).unwrap();
-        let origin: KeySource = (xprv.fingerprint(&secp), deriv_path);
-        let derived_xprv_desc_key: DescriptorKey<Segwitv0> =
-        derived_xprv.into_descriptor_key(Some(origin), DerivationPath::default()).unwrap();
+    // Set an optional passphrase for the mnemonic
+    let passphrase: Option<String> = None;
+    let mnemonic_with_passphrase = (mnemonic, passphrase);
 
-        // Wrap the derived key with the wpkh() string to produce a descriptor string
-        if let Secret(key, _, _) = derived_xprv_desc_key {
-            let mut desc = "wpkh(".to_string();
-            desc.push_str(&key.to_string());
-            desc.push_str(")");
-            keys.push(desc);
-        }
-    }
-    
-    // Return the keys as a tuple
-    (keys[0].clone(), keys[1].clone())
+    // Define external and internal derivation paths
+    let external_path = DerivationPath::from_str("m/86h/1h/0h/0")?;
+    let internal_path = DerivationPath::from_str("m/86h/1h/0h/1")?;
+
+    // Generate external and internal `Descriptors` from mnemonic
+    let (external_descriptor, ext_keymap) =
+        descriptor!(tr((mnemonic_with_passphrase.clone(), external_path)))?
+            .into_wallet_descriptor(&secp, Network::Regtest)?;
+
+    let (internal_descriptor, int_keymap) =
+        descriptor!(tr((mnemonic_with_passphrase, internal_path)))?
+            .into_wallet_descriptor(&secp, Network::Regtest)?;
+
+    // Display public descriptor strings
+    println!("External: {}", external_descriptor.to_string());
+    println!("Internal: {}", internal_descriptor.to_string());
+
+    Ok((
+        external_descriptor.to_string_with_secret(&ext_keymap),
+        internal_descriptor.to_string_with_secret(&int_keymap),
+    ))
 }
 ```
 
-To check that the above added function is working as expected, call it in the main function and print the descriptors
+To check it's working as expected, go ahead and call the function from `main`. If you haven't already, remove the `println!("Hello, world!");` and do also add a `Result<()>` as the return type for `main`, since many of our functions require error handling.
 ``` rust
-use ...
-
-fn main() {
-    let (receive_desc, change_desc) = get_descriptors();
-    println!("recv: {:#?}, \nchng: {:#?}", receive_desc, change_desc);
-}
-
-fn get_descriptors() -> (String, String) {
-    ...
+fn main() -> Result<()> {
+    // Make descriptors
+    let (recv_desc, chng_desc) = create_descriptors()?;
+    
+    Ok(())
 }
 ```
-Running the binary should produce the following result
-```shell
+
+```
 $ cargo run
-recv: "wpkh([89df6a67/84'/1'/0'/0]tprv8iSRXyLtTKJN9qt1jyPVqwhDMEaYztXunPaRQznaH1z8gj8e2g7RnF2ZoHP56VEXwMn76AiV1Je6nJmZbFistwAQCrRGmSrsoKfdqfTDNA1/*)", 
-chng: "wpkh([89df6a67/84'/1'/0'/1]tprv8iSRXyLtTKJNCECQxBJ19cgx2ueS7mC7GNq7VqTWY3RNPMBY7DfTb9HUnXpJqa14jCJNRmi4yGxfoTVS4WLBXDkvTLq4vujeAD9NfDtSxGP/*)"
-```
-Voila! Now we have nice descriptors strings handy to use for our BDK wallet construction.
 
-## Talking to Bitcoin Core Programmatically
-Like all other tutorials we will use two wallets to send coins back and forth. A Bitcoin Core wallet accessible via `bitcoin-cli` command line tools, and a BDK wallet maintained by BDK library.    
+Mnemonic: print region fury craft unique forest humble famous river cargo job egg
+External: "tr([fd985ed4/86'/1'/0']tpubDDAigjCsRaR5FM7nCwdC5NoJh2sAN4rRYA13zgVg9323Zf4Z1SCtCWfU55ttNXrxmbnGC2ZdCQFLqxhUUNGvNgbMVEocRJfSJtr7UKzBDQd/0/*)#n8e7s0pc"
+Internal: "tr([fd985ed4/86'/1'/0']tpubDDAigjCsRaR5FM7nCwdC5NoJh2sAN4rRYA13zgVg9323Zf4Z1SCtCWfU55ttNXrxmbnGC2ZdCQFLqxhUUNGvNgbMVEocRJfSJtr7UKzBDQd/1/*)#znuld63q"
 
-But unlike other tutorials, we won't be using `bitcoin-cli` to talk to the Core wallet (we can, but let's spice things up). Instead, we will use the `bitcoin-rpc` library, to talk with our core node listening at `127.0.0.1:18443`, from inside our main function. This will allow us to write code, that will handle both the core and BDK wallet, from inside of the same function, and we won't have to switch terminals!
-
-Remember we imported `use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};`? Thats exactly for this purpose.
-
-Start the `bitcoind` node.
-
-you should see bitcoind listening at port 18443
-```shell
-$ sudo netstat -nptl | grep 18443 
-tcp        0      0 0.0.0.0:18443           0.0.0.0:*               LISTEN      135532/bitcoind 
 ```
 
-Lets create a core rpc interface in our main function.
-```rust
-fn main() {
-    ...
-    
-    // Create a RPC interface
-    let rpc_auth = rpc_auth::UserPass(
-        "admin".to_string(),
-        "password".to_string()
-    ); 
-    let core_rpc = Client::new("http://127.0.0.1:18443/wallet/test".to_string(), rpc_auth).unwrap();
-    println!("{:#?}", core_rpc.get_blockchain_info().unwrap());
-}
-```
-We have provided our RPC authentication `username` and `password` (same as provided in `bitcoin.conf` file).
-We have provided the RPC address of our local bitcoin node, with the path to a wallet file, named `test`. And then asked the rpc client to give us the current blockchain info.
-If everything goes well, running `cargo run` you should see an output like below:
-```shell
-$ cargo run
-...
-GetBlockchainInfoResult {
-    chain: "regtest",
-    blocks: 0,
-    headers: 0,
-    best_block_hash: 0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206,
-    difficulty: 0.00000000046565423739069247,
-    median_time: 1296688602,
-    verification_progress: 1.0,
-    initial_block_download: true,
-    ...
-```
-Thats it. Now we can programmatically talk to our core node.
+These are our *public* descriptors. Note however, we used `to_string_with_secret` in the last expression of `create_descriptors`, because to sign transactions, the wallet must have knowledge of the private keys, and so in this case we initialized a wallet using descriptors with the secrets included. Try adding another `println!` statement somewhere to see what those descriptors look like.
 
-## Get some balance in core wallet.
-We have told our rpc client that we would use a wallet named `test`. But currently, our core node doesn't have such a wallet. So let's create the wallet and fund it with some test coins.
-```rust
-fn main() {
-    ...
-
-    // Create the test wallet 
-    core_rpc.create_wallet("test", None, None, None, None).unwrap();
-    
-    // Get a new address
-    let core_address = core_rpc.get_new_address(None, None).unwrap();
-    
-    // Generate 101 blocks and use the above address as coinbase
-    core_rpc.generate_to_address(101, &core_address).unwrap();
-    
-    // fetch the new balance
-    let core_balance = core_rpc.get_balance(None, None).unwrap();
-    
-    // Show balance
-    println!("core balance: {:#?}", core_balance);
-}
-```
-This will create a wallet in bitcoin core named `test`. generate 101 blocks and use a new address from the wallet as coinbase wallet. Because required coinbase maturity in bitcoin is 100 blocks, by generating 101 blocks, we will have the balance of the first coinbase block reward available for use.
-The last `println!()` statement will show the new updated balance as 50 BTC.
-```shell
-$ cargo run
-...
-core balance: Amount(50.00000000 BTC)       
-```
-Great! We now have 50 regtest BTC to play with.
 
 ## Setup the BDK wallet
-Now that we are done setting up the core wallet. The last remaining step is to setup the BDK wallet. For this we will use the previous descriptor generation function and write code as below.
-
-**Note**: You might want to comment out the previous code in `main()`, as running them again will create more coins in core, which isn't an issue, but might be confusing.
+Now let's create a new BDK wallet. There are a few ways to persist wallet data to a file store, but for simplicity we'll use a transient, in-memory database provided by the `Wallet::new_no_persist` API.
 
 ```rust
-fn main() {
-    ...
+fn main() -> Result<()> {
+    // Make descriptors
+    let (recv_desc, chng_desc) = create_descriptors()?;
 
-    // Get receive and change descriptor
-    let (receive_desc, change_desc) = get_descriptors();
-    
-    // Use deterministic wallet name derived from descriptor
-    let wallet_name = wallet_name_from_descriptor(
-        &receive_desc,
-        Some(&change_desc),
-        Network::Regtest,
-        &Secp256k1::new()
-    ).unwrap();
+    // Create Bdk wallet
+    let mut wallet = Wallet::new_no_persist(&recv_desc, Some(&chng_desc), Network::Regtest)?;
 
-    // Create the datadir to store wallet data
-    let mut datadir = dirs_next::home_dir().unwrap();
-    datadir.push(".bdk-example");
-    let database = sled::open(datadir).unwrap();
-    let db_tree = database.open_tree(wallet_name.clone()).unwrap();
+    let balance = wallet.get_balance().total();
+    println!("Wallet balance before sync: {balance} sat");
 
-    // Set RPC username, password and url
-    let auth = Auth::UserPass {
-        username: "admin".to_string(),
-        password: "password".to_string()
-    };
-    let mut rpc_url = "http://".to_string();
-    rpc_url.push_str("127.0.0.1:18443");
+    let bdk_address = wallet.get_address(AddressIndex::New).address;
+    println!("Wallet new address: {bdk_address}");
 
-    // Setup the RPC configuration
-    let rpc_config = RpcConfig {
-        url: rpc_url,
-        auth,
-        network: Network::Regtest,
-        wallet_name,
-        skip_blocks: None,
-    };
-
-    // Use the above configuration to create a RPC blockchain backend
-    let blockchain = RpcBlockchain::from_config(&rpc_config).unwrap();
-
-    // Combine everything and finally create the BDK wallet structure
-    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Regtest, db_tree, blockchain).unwrap();
-
-    // Sync the wallet
-    wallet.sync(NoopProgress, None).unwrap();
-
-    // Fetch a fresh address to receive coins
-    let address = wallet.get_address(AddressIndex::New).unwrap().address;
-
-    println!("bdk address: {:#?}", address);
+    Ok(())
 }
 ```
-That's a lot of code. They are divided into logical sections. Let's discuss each step one by one.
- - First we used our previous `get_descriptors()` function to generate two descriptor strings. One for generating receive addresses and one for change addresses.
- - Then we used a special function from BDK called `wallet_name_from_descriptor()` to derive a name of the wallet from our descriptors. This allows us to have wallet names deterministically linked with descriptors. So in future if we use a different descriptor, the wallet will automatically have a different name. This allows us to not mix wallet names with same descriptor, and given the descriptors we can always determine what was the name we used. It is recommended to derive wallet names like this while using a core backend. Note that this wallet will be created inside the core node. So just like we accessed the `test` wallet, we could also access this wallet.
- - Then we created a data directory at path `/home/username/.bdk-example`. We use `dirs_next` to find our home path, and then appended that with `.bdk-example`. All the BDK wallet files will be created and maintained in that directory. In the Database we instructed BDK to create a new `Tree` with `wallet_name`, so given a descriptor, BDK will always know which DB Tree to refer (`Tree` is a `sled` specific term).
- - Then like we did previously, we created the rpc username/password authentication, and specified the rpc url. Note that we cannot use the same `rpc_auth` we used before for `core_rpc` as BDK auth and bitcoin-rpc auth are slightly separate structures.
- - We combined all this information and created an `RpcConfig` structure.
- - We used the rpc configuration to create a `RpcBlockchain` structure.
- - Finally we used the Descriptors, Database, and Blockchain to create our final BDK `wallet` structure.
 
-Now that we have our wallet cooked, in the end, we instructed it to sync with the bitcoin core backend, and fetch us a new address.
-
-If all goes well, you should see an address printed in the terminal.
-
-```shell
-cargo run
-    Finished dev [unoptimized + debuginfo] target(s) in 2.99s
-    Running `target/debug/bdk-example`
-bdk address: bcrt1q9vkmujggvzs0rd4z6069v3v0jucje7ua7ap308
+Try getting a fresh address ready to be funded.
 ```
+$ cargo run
+
+...
+
+Wallet balance before sync: 0 sat
+Wallet new address: bcrt1phjt3lxr5rs0t9d2fvtmlp0vvhn4ru6w6zcveu45zkv0usrpyhfnset0658
+```
+
+
+## Talking to Bitcoin Core Programmatically
+We'll be using two wallets to send coins back and forth: a Bitcoin Core wallet running `bitcoind`, and the BDK wallet we just created. Instead of using `bitcoin-cli` for wallet operations, we'll take advantage of the `bdk_bitcoind_rpc` library to talk to Core listening at `127.0.0.1:18443` from rust. This will allow us to write code in one place that handles both wallets simultaneously.
+
+Start `bitcoind`.
+
+We'll now configure the Core RPC client and test that we're able to make calls to `bitcoind` over the json-rpc interface.
+```rust
+    ...
+
+    // Configure Core Rpc interface
+    let auth = Auth::UserPass("admin".to_string(), "password".to_string());
+
+    let client = bitcoincore_rpc::Client::new("http://127.0.0.1:18443/wallet/test", auth)?;
+
+    // Test connection
+    println!("Best block hash: {:?}", client.get_best_block_hash()?);
+
+    Ok(())
+}
+```
+
+We have provided the RPC `Auth` credentials (same as in `bitcoin.conf`), and we provided the URL to our local `bitcoind` with the path to a wallet file named `test`. We then asked the client for the current best block hash. That's all that's needed to programmatically talk to our Core node.
+
+`cargo run` again and you should see the following:
+```
+$ cargo run
+
+...
+
+Best block hash: 008c1c54bfec053e788a7051a8bfaab69d3a529228887de04ca9bff682610217
+```
+
+A list of available RPC methods like `get_best_block_hash` can be found in the documentation for the [bitcoincore_rpc](https://docs.rs/bitcoincore-rpc/latest/bitcoincore_rpc/trait.RpcApi.html) crate. You may already be familiar with some of them.
+
+
+## Mine regtest coins
+We're going to need funds to play with. Create Bitcoin Core's wallet now, get a new address, and generate enough blocks for our balance to become spendable.
+```rust
+    ...
+
+    // Create the test wallet 
+    client.create_wallet("test", None, None, None, None)?;
+    
+    // Get new address
+    let core_address = client.get_new_address(None, None)?.assume_checked();
+    
+    // Generate blocks
+    println!("Generating blocks...");
+    client.generate_to_address(101, &core_address)?;
+    
+    // Get Core balance
+    let core_balance = client.get_balance(None, None)?.to_btc();
+    println!("Core balance: {core_balance} BTC");
+
+    Ok(())
+}
+```
+
+```
+$ cargo run
+
+...
+
+Core balance: 50 BTC       
+```
+
+Let's recap what we've done so far.
+
+- Made a function `create_descriptors` to create the descriptors which define two new keychains.
+- Created a temporary `Wallet` for BDK initialized with our descriptors and derived our first `Address`.
+- Configured the `Client` from a `url` and `Auth` that's capable of speaking to Core over json-rpc, and practiced calling some common rpc methods.
+- Created Bitcoin Core's wallet and mined 101 blocks on regtest.
+
 
 ## Sending Sats Around
+If you made it this far, now it's time for the fun part. How do we go about syncing the state of BDK's wallet with transaction data from the blockchain? For this we introduce a new type `Emitter` who will serve two primary functions: 1) polling `bitcoind` for new blocks, and 2) querying the node's mempool for any unconfirmed transactions we're interested in. `Emitter` will emit all the relevant transaction data it finds to the wallet so that it may update its view of the best chain. This allows the BDK wallet to discover when it has recieved coins so it can proceed to create transactions as well.
 
-Now that we have covered all the groundwork, we have all we need to send coins back and forth between core and BDK wallet.
+The general flow will be:
 
-We will keep things simple here and make the following actions
- - Send 10 BTC from Core to BDK
- - Send back 5 BTC from BDK to Core
- - Display balance of two wallets
+- Send 2M satoshis from Core to BDK
+- Send back 1M satoshis from BDK to Core
+- Display the end balances
 
-In the last line of previous section we got a new address from BDK wallet. We will start from there. Without further discussion lets jump straight into code.
-
+First we need to initialize `Emitter` with the rpc `Client` and a given `start_height`, which we can assume is zero, provided the node starts mining from genesis. Now is also a good time to set the payment amount to some constant value and place it before the start of `main`.
 ```rust
-fn main() {
+const AMOUNT: u64 = 2_000_000;
+
+fn main() -> Result<()> {
     ...
 
-    // Fetch a fresh address to receive coins
-    let address = wallet.get_address(AddressIndex::New).unwrap().address;
+    // Create chain source emitter
+    let start_height = 0u32;
+    let mut emitter = Emitter::new(&client, wallet.latest_checkpoint(), start_height);
 
-    // Send 10 BTC from Core to BDK
-    core_rpc.send_to_address(&address, Amount::from_btc(10.0).unwrap(), None, None, None, None, None, None).unwrap();
+    // Sync Bdk wallet
+    sync(&mut wallet, &mut emitter)?;
 
-    // Confirm transaction by generating some blocks
-    core_rpc.generate_to_address(1, &core_address).unwrap();
-
-    // Sync the BDK wallet
-    wallet.sync(NoopProgress, None).unwrap();
-    
-    // Create a transaction builder
-    let mut tx_builder = wallet.build_tx();
-
-    // Set recipient of the transaction
-    tx_builder.set_recipients(vec!((core_address.script_pubkey(), 500000000)));
-
-    // Finalise the transaction and extract PSBT
-    let (mut psbt, _) = tx_builder.finish().unwrap();
-
-    // Set signing option
-    let signopt = SignOptions {
-        assume_height: None,
-        ..Default::default()
-    };
-
-    // Sign the above psbt with signing option
-    wallet.sign(&mut psbt, signopt).unwrap();
-
-    // Extract the final transaction
-    let tx = psbt.extract_tx();
-
-    // Broadcast the transaction
-    wallet.broadcast(tx).unwrap();
-
-    // Confirm transaction by generating some blocks
-    core_rpc.generate_to_address(1, &core_address).unwrap();
-
-    // Sync the BDK wallet
-    wallet.sync(NoopProgress, None).unwrap();
-
-    // Fetch and display wallet balances
-    let core_balance = core_rpc.get_balance(None, None).unwrap();
-    let bdk_balance = Amount::from_sat(wallet.get_balance().unwrap());
-    println!("core wallet balance: {:#?}", core_balance);
-    println!("BDK wallet balance: {:#?}", bdk_balance);
+    Ok(())
 }
 ```
 
-The above code segment is mostly straightforward. The only new thing added is `wallet.build_tx()` which returns a `TxBuilder`. BDK allows us to have very fine grained control of cooking up transactions. Almost everything that is possible to do with a Bitcoin transaction can be done in BDK. Here we have a very simple vanilla transaction with no added magic. To get full list of capabilities that `TxBuilder` supports scour its implementation [here](https://github.com/bitcoindevkit/bdk/blob/38d1d0b0e29d38cd370c740d798d96a3c9fcaa1f/src/wallet/tx_builder.rs#L123-L153).
+We then do an initial `sync` of the wallet so it can catch up to the chain tip. For that to work, we need another dedicated function which serves merely as a convenience, since it will be called two more times before we're finished. Let's do that now.
 
-Finally to step through what we did above:
- - We asked core wallet to send 10 BTC to bdk wallet address.
- - We confirmed the transaction, and synced the wallet.
- - We asked BDK to create a transaction sending 5 BTC to core wallet address.
- - We signed and broadcast the transaction. BDK will use the same core node to broadcast the transaction to network.
- - We confirmed the transaction by mining a block, and synced the wallet.
- - We fetched and displayed balance of both core and BDK wallet.
-
-If all goes well, you should see the final updated balance as below:
-```shell
-$ cargo run
-    Compiling bdk-example v0.1.0 (/home/raj/github-repo/bdk-example/bdk-example)
-    Finished dev [unoptimized + debuginfo] target(s) in 3.57s
-    Running `target/debug/bdk-example`
-core wallet balance: Amount(144.99998590 BTC)
-BDK wallet balance: Amount(4.99999859 BTC)
-```
-Voila! We have ~145 BTC (150 - 5) in core wallet and 5 BTC (10 - 5) in BDK wallet. The slight deficiency in the amount are due to transaction fees. Because we are using regtest, the fee is some standard value hardcoded in core node.
-
-Check out the data directory where BDK has created the wallet data files.
-
-```shell
-$ ls ~/.bdk-example/
-blobs  conf  db  snap.0000000000023CAB
-```
-
-And finally, this is what the final `main.rs` file looks like.
+Create a new function called `sync` that accepts as parameters a mutable reference to `Wallet` and a mutable reference to `Emitter` and returns `Result<()>`. It can go at the bottom of the file for now.
 
 ```rust
-use bdk::bitcoin::Network;
+/// Calls `Emitter::next_block`, applying transactions we care about to the wallet's
+/// transaction graph until all updates have been consumed.
+fn sync(wallet: &mut Wallet, emitter: &mut Emitter<Client>) -> Result<()> {
+    print!("Syncing... ");
+    while let Some((height, block)) = emitter.next_block()? {
+        wallet.apply_block_relevant(block, height)?;
+    }
+    wallet.commit()?;
+
+    println!("Ok");
+    Ok(())
+}
+```
+
+Basically, we're calling `Emitter::next_block` repeatedly until it returns `None`, signifying we reached the tip. On each round, `apply_block_relevant` scans a block for transactions sending to or from the wallet, staging changes to the local chain and transaction graph to be committed by the wallet.
+
+Now that we're in sync with the chain, let's carry on. We left `main` right after calling `sync`.
+
+```rust
+    ...
+
+    // Fund Bdk wallet (tx 1)
+    println!("Sending 2M sat Core -> Bdk");
+    client.send_to_address(&bdk_address, Amount::from_sat(AMOUNT), None, None, None, None, None, None)?;
+
+    // Query mempool
+    let unconfirmed = emitter.mempool()?;
+    wallet.batch_insert_relevant_unconfirmed(unconfirmed.iter().map(|(tx, time)| (tx, *time)));
+    wallet.commit()?;
+
+    // Show pending balance
+    let balance = wallet.get_balance().untrusted_pending;
+    println!("Wallet pending: {balance} sat");
+
+    // Confirm tx by generating blocks
+    client.generate_to_address(1, &core_addr)?;
+
+    // Sync (2)
+    sync(&mut wallet, &mut emitter)?;
+
+    // Show confirmed
+    let balance = wallet.get_balance().confirmed;
+    assert_eq!(balance, AMOUNT);
+    println!("Confirmed! {balance} sat");
+    println!();
+
+    // Build tx with Bdk wallet (tx 2)
+    println!("Sending 1M sat Bdk -> Core");
+    let mut tx_builder = wallet.build_tx();
+    let amount = AMOUNT / 2;
+    tx_builder.add_recipient(core_address.script_pubkey(), amount);
+
+    // Finish building tx and get a new Psbt
+    let mut psbt = tx_builder.finish()?;
+
+    // Sign it
+    wallet.sign(&mut psbt, SignOptions::default())?;
+
+    // Extract raw tx from signed psbt and broadcast
+    let tx = psbt.extract_tx();
+    let fee = wallet.calculate_fee(&tx).expect("calculate fee");
+    let txid = client.send_raw_transaction(&tx)?;
+    println!("Txid: {txid}");
+
+    // Confirm tx
+    client.generate_to_address(1, &core_address)?;
+
+    // Sync (3)
+    sync(&mut wallet, &mut emitter)?;
+
+    // Display balances
+    let core_balance = client.get_balance(None, None)?.to_btc();
+    let bdk_balance = wallet.get_balance().total();
+    assert!(core_balance < 150.0);
+    assert!(bdk_balance < amount);
+    println!("Core balance: {core_balance} BTC");
+    println!("Wallet balance: {bdk_balance} sat ");
+    println!("Fee: {fee} sat");
+
+    Ok(())
+}
+```
+
+That's it for the project code. Note what occurred in the last steps:
+
+- Sent tx 1 from Core to BDK
+- Used emitter to find the unconfirmed tx
+- Mined a block to confirm tx 1
+- Sync wallet
+- Constructed tx 2 sending from BDK to Core and got a new PSBT
+- Signed tx 2 and passed it back to Core to be broadcast
+- Mined a block to confirm tx 2
+- Sync wallet
+- Assert balances are expected
+
+Here's the expected output. If anything went wrong, check that you did the following:
+
+- Properly configured `bitcoind` for regtest and started with a clean data directory
+- Used the correct RPC `Auth` credentials when creating the `bitcoincore_rpc::Client`
+- Included all dependencies including `bdk` v1.0
+- Checked for syntax errors
+
+```
+$ cargo run
+    Compiling bdk-example v0.1.0 (/home/satoshi/tutorial/bdk-example)
+    Finished dev [unoptimized + debuginfo] target(s) in 2.26s
+    Running `/target/debug/bdk-example`
+Mnemonic: print region fury craft unique forest humble famous river cargo job egg
+External: tr([fd985ed4/86'/1'/0']tpubDDAigjCsRaR5FM7nCwdC5NoJh2sAN4rRYA13zgVg9323Zf4Z1SCtCWfU55ttNXrxmbnGC2ZdCQFLqxhUUNGvNgbMVEocRJfSJtr7UKzBDQd/0/*)#n8e7s0pc
+Internal: tr([fd985ed4/86'/1'/0']tpubDDAigjCsRaR5FM7nCwdC5NoJh2sAN4rRYA13zgVg9323Zf4Z1SCtCWfU55ttNXrxmbnGC2ZdCQFLqxhUUNGvNgbMVEocRJfSJtr7UKzBDQd/1/*)#znuld63q
+Wallet balance before sync: 0 sat
+Wallet new address: bcrt1phjt3lxr5rs0t9d2fvtmlp0vvhn4ru6w6zcveu45zkv0usrpyhfnset0658
+Best block hash: 0x0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206
+Generating blocks...
+Core balance: 50 BTC
+
+Syncing... Ok
+Sending 2M sat Core -> Bdk
+Wallet pending: 2000000 sat
+Syncing... Ok
+Confirmed! 2000000 sat
+
+Sending 1M sat Bdk -> Core
+Txid: a996ec1e384bdd693220121d6919c0cbafb3b3bd7f5e7164cacfc84f1e4d9c86
+Syncing... Ok
+Core balance: 149.9899835 BTC
+Wallet bal: 999857 sat 
+Fee: 143 sat
+```
+
+
+## Conclusion
+Hopefully you have a better idea of how BDK can fetch updates by polling `bitcoind` for block data. You should feel more confident now implementing something similar in your own apps. Next steps might include doing a deep dive on crafting transactions with [`TxBuilder`](https://docs.rs/bdk/latest/bdk/wallet/tx_builder/struct.TxBuilder.html) or exploring spending policies with miniscript descriptors.
+
+As you can imagine, this is just tip of the iceberg. BDK aims for maximum flexibility in every dimension of bitcoin wallets, from keys and signers, to getting blocks, and ensuring data stays consistent. With this power in hand, we were able to implement a trustless, non-custodial, private wallet backed by a full node in under 200 lines of code. It's made possible because BDK handles the fine details under the hood, and it remains a goal and obsession to offer a convenient, high-level API so wallet devs can focus on writing the app logic they care about.
+
+To discover more of the magic behind BDK and how it might fit your development needs refer the resources below. *Please note the BDK software is under rapid development, and features are rolled out frequently. If at any point you get stuck or believe this tutorial is out of date, don't hesitate to pop into one of the communication channels to share your thoughts.
+
+Here's the final code.
+
+```rust
+use anyhow::Result;
+
+use bdk::bitcoin::bip32::DerivationPath;
 use bdk::bitcoin::secp256k1::Secp256k1;
-use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
 use bdk::bitcoin::Amount;
-use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};
+use bdk::bitcoin::Network;
 
-use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig, wallet_name_from_descriptor};
-use bdk::blockchain::{ConfigurableBlockchain, NoopProgress};
+use bdk::descriptor;
+use bdk::descriptor::IntoWalletDescriptor;
+use bdk_bitcoind_rpc::bitcoincore_rpc;
+use bdk_bitcoind_rpc::bitcoincore_rpc::Auth;
+use bdk_bitcoind_rpc::bitcoincore_rpc::Client;
+use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
+use bdk_bitcoind_rpc::Emitter;
 
-use bdk::keys::bip39::{Mnemonic, Language, MnemonicType};
-use bdk::keys::{GeneratedKey, GeneratableKey, ExtendedKey, DerivableKey, DescriptorKey};
-use bdk::keys::DescriptorKey::Secret;
+use bdk::keys::bip39::Language;
+use bdk::keys::bip39::Mnemonic;
+use bdk::keys::bip39::WordCount;
+use bdk::keys::GeneratableKey;
+use bdk::keys::GeneratedKey;
 
-use bdk::miniscript::miniscript::Segwitv0;
-
+use bdk::miniscript::miniscript::Tap;
+use bdk::wallet::AddressIndex;
+use bdk::SignOptions;
 use bdk::Wallet;
-use bdk::wallet::{AddressIndex, signer::SignOptions};
-
-use bdk::sled;
 
 use std::str::FromStr;
 
-fn main() {
-    // Create a RPC interface
-    let rpc_auth = rpc_auth::UserPass(
-        "admin".to_string(),
-        "password".to_string()
-    ); 
-    let core_rpc = Client::new("http://127.0.0.1:18443/wallet/test".to_string(), rpc_auth).unwrap();
+const AMOUNT: u64 = 2_000_000;
 
-    // Create the test wallet 
-    core_rpc.create_wallet("test", None, None, None, None).unwrap();
-    
-    // Get a new address
-    let core_address = core_rpc.get_new_address(None, None).unwrap();
-    
-    // Generate 101 blocks and use the above address as coinbase
-    core_rpc.generate_to_address(101, &core_address).unwrap();
+fn main() -> Result<()> {
+    // Make descriptors
+    let (recv_desc, chng_desc) = create_descriptors()?;
 
-    // Get receive and change descriptor
-    let (receive_desc, change_desc) = get_descriptors();
-    
-    // Use deterministic wallet name derived from descriptor
-    let wallet_name = wallet_name_from_descriptor(
-        &receive_desc,
-        Some(&change_desc),
-        Network::Regtest,
-        &Secp256k1::new()
-    ).unwrap();
+    // Create Bdk wallet
+    let mut wallet = Wallet::new_no_persist(&recv_desc, Some(&chng_desc), Network::Regtest)?;
 
-    // Create the datadir to store wallet data
-    let mut datadir = dirs_next::home_dir().unwrap();
-    datadir.push(".bdk-example");
-    let database = sled::open(datadir).unwrap();
-    let db_tree = database.open_tree(wallet_name.clone()).unwrap();
+    let balance = wallet.get_balance().total();
+    println!("Wallet balance before sync: {balance} sat");
 
-    // Set RPC username and password
-    let auth = Auth::UserPass {
-        username: "admin".to_string(),
-        password: "password".to_string()
-    };
+    let bdk_address = wallet.get_address(AddressIndex::New).address;
+    println!("Wallet new address: {bdk_address}");
 
-    // Set RPC url
-    let mut rpc_url = "http://".to_string();
-    rpc_url.push_str("127.0.0.1:18443");
+    // Configure Core Rpc interface
+    let auth = Auth::UserPass("admin".to_string(), "password".to_string());
 
-    // Setup the RPC configuration
-    let rpc_config = RpcConfig {
-        url: rpc_url,
-        auth,
-        network: Network::Regtest,
-        wallet_name,
-        skip_blocks: None,
-    };
+    let client = bitcoincore_rpc::Client::new("http://127.0.0.1:18443/wallet/test", auth)?;
 
-    // Use the above configuration to create a RPC blockchain backend
-    let blockchain = RpcBlockchain::from_config(&rpc_config).unwrap();
+    // Test connection
+    println!("Best block hash: {:?}", client.get_best_block_hash()?);
 
-    // Combine everything and finally create the BDK wallet structure
-    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Regtest, db_tree, blockchain).unwrap();
+    // Create Core wallet
+    client.create_wallet("test", None, None, None, None)?;
 
-    // Sync the wallet
-    wallet.sync(NoopProgress, None).unwrap();
+    // Get new Core address
+    let core_address = client.get_new_address(None, None)?.assume_checked();
 
-    // Fetch a fresh address to receive coins
-    let address = wallet.get_address(AddressIndex::New).unwrap().address;
+    // Generate blocks
+    println!("Generating blocks...");
+    client.generate_to_address(101, &core_address)?;
 
-    // Send 10 BTC from Core to BDK
-    core_rpc.send_to_address(&address, Amount::from_btc(10.0).unwrap(), None, None, None, None, None, None).unwrap();
+    // Get Core balance
+    let core_balance = client.get_balance(None, None)?.to_btc();
+    println!("Core balance: {core_balance} BTC");
+    println!();
 
-    // Confirm transaction by generating some blocks
-    core_rpc.generate_to_address(1, &core_address).unwrap();
+    // Configure chain source emitter
+    let start_height = 0u32;
+    let mut emitter = Emitter::new(&client, wallet.latest_checkpoint(), start_height);
 
-    // Sync the BDK wallet
-    wallet.sync(NoopProgress, None).unwrap();
+    // Sync Bdk wallet (1)
+    sync(&mut wallet, &mut emitter)?;
 
-    // Create a transaction builder
+    // Fund Bdk wallet (tx 1)
+    println!("Sending 2M sat Core -> Bdk");
+    client.send_to_address(&bdk_address, Amount::from_sat(AMOUNT), None, None, None, None, None, None)?;
+
+    // Query mempool tx
+    let unconfirmed = emitter.mempool()?;
+    wallet.batch_insert_relevant_unconfirmed(unconfirmed.iter().map(|(tx, time)| (tx, *time)));
+    wallet.commit()?;
+
+    // Show pending balance
+    let balance = wallet.get_balance().untrusted_pending;
+    println!("Wallet pending: {balance} sat");
+
+    // Confirm tx by generating blocks
+    client.generate_to_address(1, &core_address)?;
+
+    // Sync (2)
+    sync(&mut wallet, &mut emitter)?;
+
+    // Show confirmed
+    let balance = wallet.get_balance().confirmed;
+    assert_eq!(balance, AMOUNT);
+    println!("Confirmed! {balance} sat");
+    println!();
+
+    // Build tx with Bdk wallet (tx 2)
+    println!("Sending 1M sat Bdk -> Core");
     let mut tx_builder = wallet.build_tx();
+    let amount = AMOUNT / 2;
+    tx_builder.add_recipient(core_address.script_pubkey(), amount);
 
-    // Set recipient of the transaction
-    tx_builder.set_recipients(vec!((core_address.script_pubkey(), 500000000)));
+    // Finish building tx and get a new Psbt
+    let mut psbt = tx_builder.finish()?;
 
-    // Finalise the transaction and extract PSBT
-    let (mut psbt, _) = tx_builder.finish().unwrap();
+    // Sign it
+    wallet.sign(&mut psbt, SignOptions::default())?;
 
-    // Set signing option
-    let signopt = SignOptions {
-        assume_height: None,
-        ..Default::default()
-    };
-
-    // Sign the above psbt with signing option
-    wallet.sign(&mut psbt, signopt).unwrap();
-
-    // Extract the final transaction
+    // Extract raw tx from signed psbt and broadcast
     let tx = psbt.extract_tx();
+    let fee = wallet.calculate_fee(&tx).expect("calculate fee"); // TODO: propagate the error
+    let txid = client.send_raw_transaction(&tx)?;
+    println!("Txid: {txid}");
 
-    // Broadcast the transaction
-    wallet.broadcast(tx).unwrap();
+    // Confirm tx
+    client.generate_to_address(1, &core_address)?;
 
-    // Confirm transaction by generating some blocks
-    core_rpc.generate_to_address(1, &core_address).unwrap();
+    // Sync (3)
+    sync(&mut wallet, &mut emitter)?;
 
-    // Sync the BDK wallet
-    wallet.sync(NoopProgress, None).unwrap();
+    // Display balances
+    let core_balance = client.get_balance(None, None)?.to_btc();
+    let bdk_balance = wallet.get_balance().total();
+    assert!(core_balance < 150.0);
+    assert!(bdk_balance < amount);
+    println!("Core balance: {core_balance} BTC");
+    println!("Wallet balance: {bdk_balance} sat ");
+    println!("Fee: {fee} sat");
 
-    // Fetch and display wallet balances
-    let core_balance = core_rpc.get_balance(None, None).unwrap();
-    let bdk_balance = Amount::from_sat(wallet.get_balance().unwrap());
-    println!("core wallet balance: {:#?}", core_balance);
-    println!("BDK wallet balance: {:#?}", bdk_balance);
+    Ok(())
 }
 
-// generate fresh descriptor strings and return them via (receive, change) tupple 
-fn get_descriptors() -> (String, String) {
-    // Create a new secp context
+/// Creates wallet `Descriptor`s from a master secret
+fn create_descriptors() -> Result<(String, String)> {
+    // Create new secp context
     let secp = Secp256k1::new();
 
-    // You can also set a password to unlock the mnemonic
-    let password = Some("random password".to_string());
+    // Generate mnemonic
+    let mnemonic: GeneratedKey<_, Tap> =
+        Mnemonic::generate((WordCount::Words12, Language::English)).expect("generate secret");
+    println!("Mnemonic: {}", *mnemonic);
 
-    // Generate a fresh menmonic, and from their, a fresh private key xprv
-    let mnemonic: GeneratedKey<_, Segwitv0> =
-                Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
-    let mnemonic = mnemonic.into_key();
-    let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
-    let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+    // Provide our own mnemonic
+    // let mnemonic = Mnemonic::from_str(
+    //     "print region fury craft unique forest humble famous river cargo job egg",
+    // )?;
+    // println!("Mnemonic: {}", mnemonic);
 
-    // Derive our descriptors to use
-    // We use the following paths for recieve and change descriptor
-    // recieve: "m/84h/1h/0h/0"
-    // change: "m/84h/1h/0h/1" 
-    let mut keys = Vec::new();
+    // Set an optional passphrase to unlock the mnemonic
+    let passphrase: Option<String> = None;
+    let mnemonic_with_passphrase = (mnemonic, passphrase);
 
-    for path in ["m/84h/1h/0h/0", "m/84h/1h/0h/1"] {
-        let deriv_path: DerivationPath = DerivationPath::from_str(path).unwrap();
-        let derived_xprv = &xprv.derive_priv(&secp, &deriv_path).unwrap();
-        let origin: KeySource = (xprv.fingerprint(&secp), deriv_path);
-        let derived_xprv_desc_key: DescriptorKey<Segwitv0> =
-        derived_xprv.into_descriptor_key(Some(origin), DerivationPath::default()).unwrap();
+    // define external and internal derivation key path
+    let external_path = DerivationPath::from_str("m/86h/1h/0h/0")?;
+    let internal_path = DerivationPath::from_str("m/86h/1h/0h/1")?;
 
-        // Wrap the derived key with the wpkh() string to produce a descriptor string
-        if let Secret(key, _, _) = derived_xprv_desc_key {
-            let mut desc = "wpkh(".to_string();
-            desc.push_str(&key.to_string());
-            desc.push_str(")");
-            keys.push(desc);
-        }
+    // generate external and internal descriptor from mnemonic
+    let (external_descriptor, ext_keymap) =
+        descriptor!(tr((mnemonic_with_passphrase.clone(), external_path)))?
+            .into_wallet_descriptor(&secp, Network::Regtest)?;
+
+    let (internal_descriptor, int_keymap) =
+        descriptor!(tr((mnemonic_with_passphrase, internal_path)))?
+            .into_wallet_descriptor(&secp, Network::Regtest)?;
+
+    println!("External: {}", external_descriptor.to_string());
+    println!("Internal: {}", internal_descriptor.to_string());
+
+    Ok((
+        external_descriptor.to_string_with_secret(&ext_keymap),
+        internal_descriptor.to_string_with_secret(&int_keymap),
+    ))
+}
+
+/// Calls `Emitter::next_block`, applying transactions we care about to the wallet's
+/// transaction graph until all updates have been consumed.
+fn sync(wallet: &mut Wallet, emitter: &mut Emitter<Client>) -> Result<()> {
+    print!("Syncing... ");
+    while let Some((height, block)) = emitter.next_block()? {
+        wallet.apply_block_relevant(block, height)?;
     }
-    
-    // Return the keys as a tupple
-    (keys[0].clone(), keys[1].clone())
+    wallet.commit()?;
+
+    println!("Ok");
+    Ok(())
 }
 ```
-
-## Conclusion
-In this tutorial we saw some very basic BDK wallet functionality with a bitcoin core backend as the source and sync of blockchain data. This is just tip of the iceberg of BDK capabilities. BDK allows flexibility in all the dimensions of a bitcoin wallet, that is key chain, blockchain backend and database management. With all that power, we just implemented a trustless, non-custodial, private bitcoin wallet, backed by a bitcoin full node, with less than 200 lines of code (including lots of comments).
-
-BDK thus allows wallet devs, to only focus on stuff that they care about, writing wallet logic. All the backend stuff like blockchain, key management, and databases are abstracted away under the hood.
-
-To find and explore more about the BDK capabilities and how it can fit your development need refer the following resources.
 
  - [source code](https://github.com/bitcoindevkit/bdk)
  - [dev docs](https://docs.rs/bdk/latest/bdk/)
  - [community](https://discord.com/invite/d7NkDKm)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
